@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bike Computer</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; padding: 10px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+  #speedBox { text-align: center; padding: 8px 0 4px; }
+  #speed { font-size: 110px; font-weight: 700; line-height: 1;
+    font-variant-numeric: tabular-nums; }
+  .unit { font-size: 20px; color: #9aa; }
+  #grid { display: -webkit-box; display: flex; flex-wrap: wrap; margin: 0 -5px; }
+  .card { width: 50%; padding: 5px; }
+  .card div { background: #14181c; border-radius: 12px; padding: 10px 12px; }
+  .label { font-size: 13px; color: #8a9; text-transform: uppercase; letter-spacing: .5px; }
+  .val { font-size: 38px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #status { display: flex; justify-content: space-between; font-size: 15px;
+    color: #9aa; padding: 6px 4px; }
+  #buttons { display: flex; margin-top: auto; }
+  button { flex: 1; font-size: 24px; font-weight: 700; border: 0; border-radius: 14px;
+    padding: 18px 0; margin: 5px; color: #fff; }
+  #startBtn { background: #1f9d55; }
+  #startBtn.pause { background: #d9822b; }
+  #resetBtn { background: #3a3f45; }
+  .good { color: #3ddc84; } .ok { color: #f5c542; } .bad { color: #ff5c5c; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="speedBox"><span id="speed">0.0</span> <span class="unit">km/h</span></div>
+  <div id="grid">
+    <div class="card"><div><div class="label">Distance (km)</div><div class="val" id="dist">0.00</div></div></div>
+    <div class="card"><div><div class="label">Time</div><div class="val" id="time">0:00:00</div></div></div>
+    <div class="card"><div><div class="label">Avg (km/h)</div><div class="val" id="avg">0.0</div></div></div>
+    <div class="card"><div><div class="label">Max (km/h)</div><div class="val" id="max">0.0</div></div></div>
+  </div>
+  <div id="status"><span id="gps">GPS: waiting...</span><span id="clock"></span></div>
+  <div id="buttons">
+    <button id="startBtn">START</button>
+    <button id="resetBtn">RESET</button>
+  </div>
+</div>
+
+<script>
+var running = false;
+var watchId = null;
+var last = null;          // last accepted GPS point
+var distM = 0;            // metres travelled
+var movingMs = 0;         // time spent moving
+var elapsedMs = 0;        // time while running (not paused)
+var curKmh = 0;
+var maxKmh = 0;
+var lastTick = null;
+
+function $(id) { return document.getElementById(id); }
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+function fmtTime(ms) {
+  var s = Math.floor(ms / 1000);
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  return h + ':' + pad(m) + ':' + pad(s % 60);
+}
+
+function haversine(a, b) {
+  var R = 6371000, rad = Math.PI / 180;
+  var dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  var x = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function render() {
+  $('speed').textContent = curKmh.toFixed(1);
+  $('dist').textContent = (distM / 1000).toFixed(2);
+  $('time').textContent = fmtTime(elapsedMs);
+  $('avg').textContent = (movingMs > 0 ? (distM / (movingMs / 1000)) * 3.6 : 0).toFixed(1);
+  $('max').textContent = maxKmh.toFixed(1);
+  var d = new Date();
+  $('clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function onPos(p) {
+  var acc = p.coords.accuracy;
+  var cls = acc <= 15 ? 'good' : (acc <= 30 ? 'ok' : 'bad');
+  $('gps').innerHTML = 'GPS: <span class="' + cls + '">&plusmn;' + Math.round(acc) + ' m</span>';
+  if (!running) return;
+  if (acc > 30) return;                       // ignore poor fixes
+
+  var pt = { lat: p.coords.latitude, lon: p.coords.longitude, t: p.timestamp };
+  if (last) {
+    var dt = (pt.t - last.t) / 1000;
+    if (dt > 0) {
+      var d = haversine(last, pt);
+      var v = (p.coords.speed !== null && p.coords.speed >= 0) ? p.coords.speed : d / dt;
+      var kmh = v * 3.6;
+      if (kmh > 90) { return; }               // GPS glitch, skip
+      if (v < 0.8) {                          // stopped
+        curKmh = 0;
+      } else {
+        curKmh = kmh;
+        if (d >= 2) { distM += d; }
+        movingMs += dt * 1000;
+        if (kmh > maxKmh) { maxKmh = kmh; }
+      }
+    }
+  }
+  last = pt;
+  render();
+}
+
+function onErr(e) {
+  var msg = e.code === 1 ? 'permission denied' : (e.code === 2 ? 'no position' : 'timeout');
+  $('gps').innerHTML = 'GPS: <span class="bad">' + msg + '</span>';
+}
+
+function startGps() {
+  if (!navigator.geolocation) { $('gps').textContent = 'GPS not supported'; return; }
+  if (watchId === null) {
+    watchId = navigator.geolocation.watchPosition(onPos, onErr,
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  }
+}
+
+function tick() {
+  var now = Date.now();
+  if (running && lastTick !== null) { elapsedMs += now - lastTick; }
+  lastTick = now;
+  render();
+}
+
+$('startBtn').onclick = function () {
+  running = !running;
+  if (running) {
+    last = null;                 // avoid a long jump after a pause
+    lastTick = Date.now();
+    startGps();
+    this.textContent = 'PAUSE';
+    this.className = 'pause';
+  } else {
+    curKmh = 0;
+    this.textContent = 'RESUME';
+    this.className = '';
+    render();
+  }
+};
+
+$('resetBtn').onclick = function () {
+  if (!confirm('Reset this ride?')) return;
+  running = false; last = null; distM = 0; movingMs = 0;
+  elapsedMs = 0; curKmh = 0; maxKmh = 0;
+  $('startBtn').textContent = 'START';
+  $('startBtn').className = '';
+  render();
+};
+
+startGps();          // start GPS early so it has a fix when you press START
+setInterval(tick, 1000);
+render();
+</script>
+</body>
+</html>
